@@ -1,4 +1,5 @@
 import os
+import json
 from fastapi import FastAPI, Query
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -6,7 +7,7 @@ from pymongo import MongoClient
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="OWASP MongoDB Security Lab")
+app = FastAPI(title="OWASP MongoDB Security Lab - Production App")
 
 # MongoDB connection
 uri = os.getenv("MONGODB_URI")
@@ -17,59 +18,39 @@ client = MongoClient(uri)
 db = client[db_name]
 col = db[col_name]
 
-# Helper to serialize MongoDB documents (converting ObjectId to string)
 def serialize_doc(doc):
     if not doc:
         return None
     doc["_id"] = str(doc["_id"])
     return doc
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the OWASP MongoDB Security Lab FastAPI app!"}
-
 @app.get("/pages")
-def get_pages():
+def get_pages(title: str = Query(None, description="Title of the page to query")):
     """
-    Safe endpoint: Queries documents where parentId is not null.
+    Production Endpoint:
+    If no title is provided, returns all pages with parentId not null.
+    If a title is provided, searches for pages by title.
+    
+    WARNING: The search by title is intentionally implemented with a NoSQL Injection vulnerability.
+    It attempts to parse the 'title' string as JSON. If the user passes a JSON query operator 
+    (like {"$ne": "non-existent"}), it will execute as a query object instead of a literal string.
     """
     try:
-        query = {"parentId": {"$ne": None}}
+        if title:
+            # Try to parse the input as JSON to support advanced search syntax.
+            # This is a classic NoSQL injection pattern where untrusted input changes the query structure.
+            try:
+                query_val = json.loads(title)
+            except json.JSONDecodeError:
+                query_val = title
+                
+            query = {"title": query_val}
+        else:
+            # Default query: parentId not null
+            query = {"parentId": {"$ne": None}}
+            
         cursor = col.find(query)
         pages = [serialize_doc(doc) for doc in cursor]
         return {"status": "success", "count": len(pages), "data": pages}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/search-safe")
-def search_safe(title: str = Query(..., description="The title of the page to find")):
-    """
-    Safe endpoint: MongoDB queries with parameterized keys are safe from standard SQL-like injection
-    because MongoDB treats the input strictly as a value/literal.
-    """
-    try:
-        # Strict value mapping: title is treated strictly as a string literal
-        query = {"title": title}
-        cursor = col.find(query)
-        results = [serialize_doc(doc) for doc in cursor]
-        return {"status": "success", "count": len(results), "data": results}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/search-vulnerable-where")
-def search_vulnerable_where(title: str = Query(..., description="The title of the page to find")):
-    """
-    Vulnerable endpoint: Uses MongoDB '$where' operator with dynamic JavaScript string evaluation.
-    This allows a NoSQL injection leading to arbitrary JS execution on the MongoDB server.
-    
-    Example payload for title:
-        x' || '1' == '1
-    """
-    try:
-        # VULNERABLE: Direct string interpolation into JavaScript context
-        js_query = {"$where": f"this.title == '{title}'"}
-        cursor = col.find(js_query)
-        results = [serialize_doc(doc) for doc in cursor]
-        return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
